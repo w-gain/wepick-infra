@@ -39,10 +39,7 @@ services:
       SPRING_DATASOURCE_USERNAME: ${MYSQL_USER:?MYSQL_USER is required}
       SPRING_DATASOURCE_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD is required}
       SESSION_COOKIE_SECURE: "true"
-      SESSION_COOKIE_SAME_SITE: ${SESSION_COOKIE_SAME_SITE:-lax}
       CORS_ALLOWED_ORIGINS: https://${DOMAIN_NAME:?DOMAIN_NAME is required}
-      IMAGE_STORAGE_LOCAL_ROOT: /data/uploads
-      IMAGE_PUBLIC_PREFIX: /uploads
     volumes:
       - uploads_data:/data/uploads
     depends_on:
