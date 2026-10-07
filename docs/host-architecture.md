@@ -1,49 +1,47 @@
-# Host deployment architecture
+# 런타임 구조
 
-## Active target
+- 마지막 수정: 2026-10-07
+- 상태: 목표 구성. 현재 운영 배포 환경은 없음
 
-A single host runs Caddy, frontend, backend, and MySQL through Docker Compose. Caddy owns the public 80/443 ingress and automatic TLS for the application domain. A self-hosted GitHub Actions runner executes production CD locally; it is not publicly exposed and requires no server SSH key in GitHub.
+## 구성
 
-## Delivery boundaries
+단일 Docker host에서 Caddy, frontend, backend, MySQL을 Docker Compose로 실행합니다. Caddy만 호스트 포트(80/443)를 열고 TLS를 자동 발급합니다. backend와 MySQL은 호스트 포트를 열지 않습니다.
 
-- `wepick-fe` and `wepick-be`: GitHub-hosted Actions CI tests and publishes immutable GHCR images.
-- `wepick-infra`: declares the runtime topology, deployment/rollback scripts, and self-hosted runner CD workflow.
-- The production host: pulls already-built images and never builds application source.
-- The production runner executes commands as the dedicated `wepick-deploy` Linux account. It must only accept protected `main`/manual infra deployment jobs, never fork or arbitrary PR jobs. Docker access makes this account effectively host-privileged.
+- `/api/*`: Caddy가 경로의 `/api`를 떼고 `backend:8080`으로 프록시
+- `/uploads/*`: backend가 쓰는 `uploads_data` 볼륨을 Caddy가 `/srv/uploads`에 읽기 전용으로 마운트해 제공
+- `/*`: frontend
 
-## CD flow
+backend는 이미지를 `ImageStorage` 인터페이스 뒤의 로컬 볼륨(`/data/uploads`)에 저장합니다. S3·MinIO 전환은 이 인터페이스 안에서 결정합니다.
 
-1. FE/BE CI publishes a commit-SHA image to GHCR.
-2. An operator dispatches `Host production deploy` in this repository with the approved FE and BE image tags.
-3. The self-hosted runner combines those tags with `/etc/wepick/prod.env`, then executes `scripts/deploy-host.sh` locally.
-4. Compose pulls immutable images, restarts services, and verifies `/actuator/health`.
-5. Rollback dispatch uses the previously known-good tags.
+## 환경 계약
 
-## Deferred decisions
+Compose는 `--env-file`로 받은 환경 파일을 사용합니다. Git에는 이름과 예시 값만 두며 기준은 [`environments/prod/.env.example`](../environments/prod/.env.example)입니다.
 
-- Public reachability: direct 80/443 port forwarding versus Cloudflare Tunnel.
-- Automatic promotion: begin with protected manual dispatch; add an approved image-promotion manifest or repository dispatch only after the initial deployment path is exercised.
-- Local image storage is now the active target: backend writes to the named `uploads_data` volume at `/data/uploads`; Caddy mounts it read-only at `/srv/uploads` and serves `/uploads/*`. The future S3/MinIO decision is isolated behind the backend `ImageStorage` interface.
-- Automated off-host MySQL backups are intentionally deferred, but `wepick_mysql_data` must never be removed by deployment commands.
+| 변수 | 용도 |
+|---|---|
+| `DOMAIN_NAME`, `ACME_EMAIL` | Caddy 사이트 주소와 TLS 발급 |
+| `FE_IMAGE`, `FE_IMAGE_TAG`, `BE_IMAGE`, `BE_IMAGE_TAG` | 실행할 애플리케이션 이미지 |
+| `MYSQL_DATABASE`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_ROOT_PASSWORD` | MySQL 초기화와 backend DB 접속 |
 
-## Runtime environment contract
+backend에 필요한 나머지 값은 Compose가 위 값으로 만들어 넣거나(`SPRING_DATASOURCE_*`, `CORS_ALLOWED_ORIGINS`), 고정값(`SESSION_COOKIE_SECURE=true`)으로 넣습니다. 그 밖의 backend 변수는 기본값을 사용합니다. 목록은 [BE README](https://github.com/W-Gain/wepick-be#runtime-environment-variables)를 봅니다.
 
-The host owns `/etc/wepick/prod.env` with mode `600`, owned by `wepick-deploy`. It is passed to Compose using `--env-file`; only variable names and placeholders belong in Git.
+## 실행
 
-```env
-DOMAIN_NAME=wepick.example.com
-ACME_EMAIL=admin@example.com
-FE_IMAGE=ghcr.io/w-gain/wepick-fe
-BE_IMAGE=ghcr.io/w-gain/wepick-be
-MYSQL_DATABASE=wepick
-MYSQL_USER=wepick
-MYSQL_PASSWORD=replace-with-real-secret
-MYSQL_ROOT_PASSWORD=replace-with-different-real-secret
-SESSION_COOKIE_SAME_SITE=lax
+```bash
+./scripts/deploy-host.sh <환경 파일 경로>
 ```
 
-`FE_IMAGE_TAG` and `BE_IMAGE_TAG` are immutable deployment inputs added by the protected deployment workflow. `GHCR_PULL_TOKEN` is a GitHub `production` Environment secret, not a host runtime variable. The Compose file injects `IMAGE_STORAGE_LOCAL_ROOT=/data/uploads` and `IMAGE_PUBLIC_PREFIX=/uploads` into backend; they are stable topology values rather than secrets.
+Compose 구성을 검사하고, 이미지를 받고, 서비스를 기동한 뒤 backend `/actuator/health`를 확인합니다. 되돌릴 때는 이전 이미지 태그가 담긴 환경 파일로 `scripts/rollback-host.sh`를 실행합니다.
 
-## AWS status
+## 데이터 보호
 
-Existing Terraform, EC2, ECR, SSM, and S3-artifact delivery files are retained as manual-only legacy AWS assets. They are not the target for host deployment.
+- `docker compose down -v`를 운영 데이터에 실행하지 않습니다.
+- `wepick_mysql_data`와 `wepick_uploads_data`는 유지해야 하는 named volume입니다.
+- 자동 백업은 아직 없습니다.
+
+## 미결정 사항 (8단계)
+
+- **frontend 제공 방식:** Caddyfile은 `frontend:3000`으로 프록시하지만, 현재 FE 운영 이미지는 자체 Caddy로 Vite `dist/`를 80번에서 제공합니다. 이대로는 연결되지 않습니다. 목표는 단일 Caddy가 `dist/`를 직접 제공하는 구조입니다([ADR-0002](https://github.com/W-Gain/wepick-product/blob/main/docs/decisions/0002-frontend-technology-stack.md)).
+- **배포 경로:** 운영 호스트, 이미지 전달 방식(로컬 빌드·레지스트리), 배포 실행 방식
+- **외부 진입:** 80/443 직접 포트 포워딩 또는 Cloudflare Tunnel
+- **백업:** MySQL·업로드 볼륨의 외부 백업과 복구 연습

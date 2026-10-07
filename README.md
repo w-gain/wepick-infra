@@ -4,43 +4,41 @@
 
 이 저장소는 **실행 환경·배포·운영**를 관리합니다. 제품·정책·ERD·화면 정의서·와이어프레임·공통 API 설계의 기준은 [wepick-product](https://github.com/W-Gain/wepick-product)입니다. [문서 관리 규칙](https://github.com/W-Gain/wepick-product/blob/main/docs/guides/repository-and-document-guide.md)을 따르며 설계 원본을 복사하지 않습니다.
 
-아래 구현 설명은 기존 구현에 관한 기록이며 최신 제품 요구사항을 대신하지 않습니다. 현재 동작은 코드·검증 결과로 확인하고, 목표와의 차이는 [Product 전환 작업](https://github.com/W-Gain/wepick-product/blob/main/docs/plans/documentation-backlog.md)에 연결합니다.
+## 현재 상태
 
-Wepick의 단일 운영 저장소입니다. 프론트엔드와 백엔드는 GitHub-hosted Actions CI로 테스트된 불변 이미지를 GHCR에 발행하고, 이 저장소의 self-hosted Actions runner가 production CD를 실행합니다.
+- **운영 배포 환경은 없습니다.** 기존 AWS 리소스는 삭제했고, 2026-10-07에 AWS·self-hosted runner 배포 자산과 모든 배포 워크플로를 제거했습니다.
+- 이 저장소는 **목표 런타임 구성**(Compose, Caddy, 환경 계약)만 관리합니다.
+- 배포 방식(호스트, 이미지 전달, 외부 진입 경로)은 [Product 전환 계획](https://github.com/W-Gain/wepick-product/blob/main/docs/plans/2026-09-target-product-transition.md) 8단계에서 정합니다. 진행 상태는 [계획 현황](https://github.com/W-Gain/wepick-product/blob/main/docs/plans/README.md)을 봅니다.
 
-## 현재 운영 목표
+## 목표 런타임
 
 ```text
-GitHub-hosted Actions (FE/BE CI) → GHCR immutable images
-                                      ↓
-GitHub Actions self-hosted runner (infra CD) → Docker Compose host
-                                              ├─ Caddy (80/443, automatic TLS)
-                                              ├─ frontend
-                                              ├─ backend
-                                              └─ MySQL named volume
+Browser
+  └─ Caddy :80/:443 (automatic TLS)
+      ├─ /api/*     → backend:8080
+      ├─ /uploads/* → uploads_data volume (read-only)
+      └─ /*         → frontend
+
+backend
+  ├─ mysql:3306 (internal only)
+  └─ uploads_data:/data/uploads
 ```
 
-- 운영 런타임: 단일 Docker host
-- 프록시: Caddy
-- 이미지 registry: GHCR
-- CD 실행자: self-hosted GitHub Actions runner
-- 비밀값: 초기에는 GitHub Environment Secrets와 호스트의 미추적 runtime environment file, 추후 HashiCorp Vault 검토
-- 데이터베이스: infra Compose가 독립 MySQL service와 named volume을 소유
+자세한 구성과 환경 계약은 [런타임 구조](docs/host-architecture.md)를 봅니다.
 
-## Layout
+## 구성
 
-| Path | Purpose |
+| 경로 | 내용 |
 |---|---|
-| `compose/prod` | Caddy, frontend, backend, MySQL production topology |
-| `caddy` | Public routing and TLS configuration |
-| `environments/prod` | Immutable image and runtime environment templates |
-| `runner` | Self-hosted runner security and bootstrap guide |
-| `scripts` | Host deployment and rollback commands |
-| `docs/host-architecture.md` | Current host deployment decisions and runtime contract |
-| `docs/first-host-deployment.md` | M0 deployment prerequisites and production smoke checklist |
-| `terraform`, `docker`, `nginx`, legacy workflows | Historical AWS deployment assets; not the host deployment target |
+| `compose/prod` | Caddy, frontend, backend, MySQL 런타임 구성 |
+| `caddy` | 외부 라우팅과 TLS 설정 |
+| `environments/prod/.env.example` | 런타임 환경변수 이름과 예시 값 |
+| `scripts/deploy-host.sh` | 환경 파일로 Compose를 검사·기동하고 backend health를 확인 |
+| `scripts/rollback-host.sh` | 이전 환경 파일로 `deploy-host.sh` 재실행 |
+| `docs/host-architecture.md` | 런타임 구조, 환경 계약, 미결정 사항 |
+| `docs/history` | 과거 운영 기록 (현재 검증 결과 아님) |
 
-## Validation
+## 검증
 
 ```bash
 docker compose --env-file environments/prod/.env.example -f compose/prod/docker-compose.yml config -q
@@ -49,15 +47,9 @@ docker run --rm -e DOMAIN_NAME=wepick.example.com -e ACME_EMAIL=admin@example.co
   caddy:2.10-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
 ```
 
-## AWS legacy
-
-AWS resources are not destroyed in this branch. Terraform, EC2/SSM/ECR delivery scripts, and existing AWS workflows remain preserved for historical reference. Legacy AWS workflows are manual-only and are not part of host CD.
-
 ## 문서
 
-- [제품·공통 시스템 설계](https://github.com/W-Gain/wepick-product)
-- [Host 구조와 환경 계약](docs/host-architecture.md)
-- [최초 배포·검증 절차](docs/first-host-deployment.md)
-- [Runner 안내](runner/README.md)
+- [런타임 구조와 환경 계약](docs/host-architecture.md)
 - [HQ에서 이전한 2026-08-20 운영 기록](docs/history/hq-2026-08-20.md) — 현재 운영 검증 결과가 아님
+- [제품·공통 시스템 설계](https://github.com/W-Gain/wepick-product)
 - [작업 지침](AGENTS.md)
